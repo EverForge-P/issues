@@ -2,8 +2,7 @@
 
 **Document Version:** 1.0.0  
 **Environment:** Sriphat SIT Kubernetes Cluster (`smc-his-sit-*`)  
-**Target Repository:** `d:\m1 repo\Releases\sriphat-sit`  
-**Investigation Mode:** 100% Read-Only Inspection (No cluster state or repository files modified)  
+**Target Repository:** `\Releases\sriphat-sit`  
 **Target Audience:** Lead Developers, Software Engineers, DevOps Engineers, System Architects  
 
 ---
