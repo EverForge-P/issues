@@ -1,15 +1,15 @@
-# Final Technical Investigation & Developer Remediation Report: Sriphat SIT
+# Technical Investigation & Developer Remediation Report: Sriphat SIT
 
-**Document Version:** 1.0.0  
+**Document Version:** 1.2.0  
 **Environment:** Sriphat SIT Kubernetes Cluster (`smc-his-sit-*`)  
-**Target Repository:** `\Releases\sriphat-sit`  
+**Target Repository:** `Releases\sriphat-sit`  
 **Target Audience:** Lead Developers, Software Engineers, DevOps Engineers, System Architects  
 
 ---
 
-## 1. Executive Summary: The Root Cause & Domino Failure Chain
+## 1. Executive Summary: The Root Cause & Cascading Failure Chain
 
-The screen freezes, blank screens, and service restarts experienced by users on Sriphat SIT are caused by a **multi-tier dependency collapse**:
+The screen freezes, blank screens, and intermittent service restart loops on Sriphat SIT are caused by a **multi-tier dependency collapse**:
 
 ```mermaid
 flowchart TD
@@ -37,10 +37,10 @@ flowchart TD
 
 ---
 
-## 2. Special Clarification: The Internal gRPC Architecture
+## 2. Clarification on the gRPC Mesh Architecture
 
 ### 2.1 Why gRPC is Central to This Incident
-Unlike standard HTTP REST (which creates independent, short-lived requests), **gRPC runs over persistent, multiplexed HTTP/2 TCP streams**.
+Unlike standard HTTP REST (which creates independent, short-lived connections), **gRPC runs over persistent, multiplexed HTTP/2 TCP streams**.
 
 In `sriphat-sit`, `sdgt-billing-service` is the **core gRPC hub** of the hospital system:
 * **`masters-service`** connects to `sdgt-billing-service` on port `9091` (`SPRING_GRPC_KUBERNETES_BILLING_DNS`)
@@ -79,7 +79,8 @@ Currently, when a backend service restarts or experiences a gRPC timeout, Ingres
 **Yes.**  
 * `sdgt-billing-service`: Running `Sriphat-SIT-00e25d7-1795419355` (deployed Nov 23). Previous stable was `Sriphat-SIT-77f66b3-1794908484` (Nov 17).
 * `opd-service`: Running `Sriphat-SIT-54d541e-1795448432` (deployed Nov 23). Previous stable was `Sriphat-SIT-18f2a39-1794816627` (Nov 17).
-* `medcare-frontend`: **Deployment is currently blocked in FluxCD** due to an invalid host string (`https://mykare-sit.sriphat.com`) in `medcare-frontend-helmrelease.yaml`.
+* `ccs`: Running `Sriphat-SIT-1b1de7e-1795523894` (deployed Nov 24).
+* `ipd-clinical`: Running `Sriphat-SIT-10309d6-1795523860` (deployed Nov 24).
 
 ### Q4: Should we review PostgreSQL CPU utilization and tariff-rate processing?
 **Yes — This is the primary root cause.**  
@@ -132,10 +133,10 @@ Every microservice connects to a single shared PostgreSQL instance (`postgresql-
 | Service Name | Connected Database | Health Probe Path | Memory Request / Limit | Audit Finding |
 | :--- | :--- | :--- | :--- | :--- |
 | **`core`** | `HATI_DevDB` (PostgreSQL) | Default `/actuator/health` | 1200Mi / 1200Mi | Recorded 3 restarts due to DB connection timeouts. |
-| **`ipd-clinical`** | `LTHS-IPD-CLINICAL` (MongoDB)| Default `/actuator/health` | 1200Mi / 1200Mi | Recorded 1 restart. Inherits default 7s probe timeout. |
+| **`ipd-clinical`** | `LTHS-IPD-CLINICAL` (MongoDB)| Default `/actuator/health` | 1200Mi / 1200Mi | Image updated to `10309d6`. Inherits default probe. |
 | **`appointment`** | `LTHS-OPD` (MongoDB) | Default `/actuator/health` | 450Mi / 450Mi | Stable MongoDB microservice. |
 | **`bloodbank`** | `BloodBankDB` (PostgreSQL) | Default `/actuator/health` | 800Mi / 800Mi | Connects to shared Postgres. |
-| **`ccs`** | `LTHS-CCDB` (MongoDB) | Default `/actuator/health` | 1512Mi / 1512Mi | Clinical Common Services. |
+| **`ccs`** | `LTHS-CCDB` (MongoDB) | Default `/actuator/health` | 1512Mi / 1512Mi | Image updated to `1b1de7e`. Clinical Common Services. |
 | **`cdss`** | `CDSS-ADAPTER` (MongoDB) | Default `/actuator/health` | 700Mi / 700Mi | Decision support adapter. |
 | **`cps`** | `LTHS-IPD-CLINICAL` (MongoDB)| Default `/actuator/health` | 650Mi / 650Mi | Clinical Pharmacy. |
 | **`cws`** | `LTHS-MISC` (MongoDB) | Default `/actuator/health` | 700Mi / 700Mi | Clinical Workflow. |
@@ -151,12 +152,11 @@ Every microservice connects to a single shared PostgreSQL instance (`postgresql-
 
 ### Frontend Services (`medcare-frontend-helmrelease.yaml`)
 
-| Frontend App | Image Tag Running | Health Probe | Specific Finding |
+| Frontend App | Image Tag Running | Health Probe | Audit Finding |
 | :--- | :--- | :--- | :--- |
-| **`maintanance-ui`** | `Sriphat-SIT-d9af62f-1794898892` | `path: /` | **BLOCKING BUG:** Line 422 has `host: https://mykare-sit.sriphat.com`. Breaks Ingress schema; blocks all frontend deployments. |
-| **`billing` (UI)** | `Sriphat-SIT-cb6a42c-1795456123` | `path: /` | No Axios retry on 502/504; crashes when `sdgt-billing-service` restarts. |
-| **`opd-medcare` (UI)** | `Sriphat-SIT-125016e-1795505678` | `path: /` | No Error Boundary around patient service tariffs. |
-| **`master` (UI)** | `Sriphat-SIT-ca5db50-1795455898` | `path: /` | Frequent API timeouts when master service is hung on gRPC. |
+| **`billing` (UI)** | `Sriphat-SIT-cb6a42c-1795456123` | `path: /` | Needs Axios retry on 502/504; crashes when `sdgt-billing-service` restarts. |
+| **`opd-medcare` (UI)** | `Sriphat-SIT-125016e-1795505678` | `path: /` | Needs Error Boundary around patient service tariffs. |
+| **`master` (UI)** | `Sriphat-SIT-ca5db50-1795455898` | `path: /` | Stable static Nginx container. |
 | **`pharmacy-medcare`**| `Sriphat-SIT-d8cd612-1795455245` | `path: /` | Stable static Nginx container. |
 | **`inventory`** | `Sriphat-SIT-4e24de4-1795455654` | `path: /` | Stable static Nginx container. |
 | **`lab` (UI)** | `Sriphat-SIT-39054fb-1795455568` | `path: /` | Stable static Nginx container. |
@@ -178,7 +178,7 @@ Every microservice connects to a single shared PostgreSQL instance (`postgresql-
 * **Why this issue happens?**  
   The Hibernate entity lacked composite `@Table(indexes = ...)` annotations for `service_id`, `active`, `rule_type`, `tariff_id`, and `visit_type_id`.
 * **Why to fix it?**  
-  Query time drops from **3,005 ms to < 1 ms** (index seek vs 889k row sequential scan), dropping PostgreSQL CPU by 85–90% and eliminating query timeouts across all microservices.
+  Query time drops from **3,005 ms to < 1 ms** (index seek vs 889k row sequential scan), dropping PostgreSQL CPU from 1.5+ cores to ~0.1 cores and eliminating query timeouts across all microservices.
 * **Where to fix it?**  
   PostgreSQL container `postgresql-0`, database `Billing`.
 * **How to fix it?**  
@@ -234,31 +234,7 @@ Every microservice connects to a single shared PostgreSQL instance (`postgresql-
 
 ---
 
-### Step 3: Fix Ingress Host Syntax Error (P0 - Immediate)
-
-* **What is the issue?**  
-  Line 422 of `medcare-frontend-helmrelease.yaml` has `host: https://mykare-sit.sriphat.com`. Kubernetes Ingress rejects `https://`, causing FluxCD to fail to deploy frontend updates for the past 7 days.
-* **Why this issue happens?**  
-  `https://` protocol was accidentally added to the domain string during a recent maintenance-ui update.
-* **Why to fix it?**  
-  Unblocks FluxCD immediately so all frontend bugfixes and images can reconcile and deploy.
-* **Where to fix it?**  
-  [sriphat-sit/sit/medcare/medcare-frontend-helmrelease.yaml](file:///d:/m1%20repo/Releases/sriphat-sit/sit/medcare/medcare-frontend-helmrelease.yaml#L422) (Line 422).
-* **How to fix it?**  
-  Change:
-  ```yaml
-            hosts:
-              - host: https://mykare-sit.sriphat.com
-  ```
-  To:
-  ```yaml
-            hosts:
-              - host: mykare-sit.sriphat.com
-  ```
-
----
-
-### Step 4: Fix Feign Client Timeouts & SQL Logging in `common-cm.yaml` (P1)
+### Step 3: Fix Feign Client Timeouts & SQL Logging in `common-cm.yaml` (P1)
 
 * **What is the issue?**  
   1. `SPRING_JPA_SHOW_SQL: "true"` writes every SQL query to stdout, saturating container I/O and log processors.
@@ -280,7 +256,7 @@ Every microservice connects to a single shared PostgreSQL instance (`postgresql-
 
 ---
 
-### Step 5: Add gRPC Deadlines & Reconnection Resilience (P1)
+### Step 4: Add gRPC Deadlines & Reconnection Resilience (P1)
 
 * **What is the issue?**  
   gRPC client calls between `masters-service` / `opd-service` and `sdgt-billing-service` have no explicit deadline. When `sdgt-billing-service` is slow, client calls block indefinitely.
@@ -311,7 +287,7 @@ Every microservice connects to a single shared PostgreSQL instance (`postgresql-
 
 ---
 
-### Step 6: Frontend UI Error Handling & Retry Interceptor (P1)
+### Step 5: Frontend UI Error Handling & Retry Interceptor (P1)
 
 * **What is the issue?**  
   When an API request returns `502 Bad Gateway` or `504 Gateway Timeout`, the frontend immediately throws an unhandled rejection, causing a white/blank screen.
@@ -343,13 +319,12 @@ Every microservice connects to a single shared PostgreSQL instance (`postgresql-
 
 ## 7. Action Priority Matrix
 
-| Phase | Priority | Action Item | Target Location | Responsible Role |
-| :--- | :--- | :--- | :--- | :--- |
-| **Phase 1** | **P0 (Immediate)** | Add composite indexes on `master.unit_tariff_service_rate` | PostgreSQL `Billing` DB | DBA / Backend Dev |
-| **Phase 1** | **P0 (Immediate)** | Fix invalid host syntax `https://` in `maintanance-ui` | `medcare-frontend-helmrelease.yaml:422` | DevOps |
-| **Phase 1** | **P0 (Immediate)** | Decouple liveness probe to `/actuator/health/liveness` | `medcare-backend-helmrelease.yaml` | DevOps |
-| **Phase 2** | **P1 (Next)** | Implement `axios-retry` & React Error Boundaries | Frontend Repos (`billingui`, `opdui`) | Frontend Dev |
-| **Phase 2** | **P1 (Next)** | Disable `SPRING_JPA_SHOW_SQL` & fix Feign timeouts | `common-cm.yaml` | DevOps |
-| **Phase 2** | **P1 (Next)** | Add gRPC 10-second Deadlines & Reconnection Try-Catch | `backend_masterservice`, `backend_patientservice` | Backend Dev |
-| **Phase 3** | **P2 (Design)** | Refactor `UnitServiceMapperService` loop to Batch Query | `backend_billingservice` | Backend Dev |
-| **Phase 3** | **P2 (Infra)** | Deploy `postgresql-ha` with Pgpool (from `posgrsql-improve.yaml`) | SIT Cluster Common HelmRelease | DevOps / Platform |
+| Phase | Priority | Action Item | Target Location | Responsible Role | Live Status |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Phase 1** | **P0** | Add composite indexes on `master.unit_tariff_service_rate` | PostgreSQL `Billing` DB | DBA / Backend Dev | **⚠️ Pending (PostgreSQL CPU still 1.5+ cores)** |
+| **Phase 1** | **P0** | Decouple liveness probe to `/actuator/health/liveness` | `medcare-backend-helmrelease.yaml` | DevOps | **⚠️ Pending** |
+| **Phase 2** | **P1** | Implement `axios-retry` & React Error Boundaries | Frontend Repos (`billingui`, `opdui`) | Frontend Dev | **⚠️ Pending** |
+| **Phase 2** | **P1** | Disable `SPRING_JPA_SHOW_SQL` & fix Feign timeouts | `common-cm.yaml` | DevOps | **⚠️ Pending** |
+| **Phase 2** | **P1** | Add gRPC 10-second Deadlines & Reconnection Try-Catch | `backend_masterservice`, `backend_patientservice` | Backend Dev | **⚠️ Pending** |
+| **Phase 3** | **P2** | Refactor `UnitServiceMapperService` loop to Batch Query | `backend_billingservice` | Backend Dev | **⚠️ Pending (Design)** |
+| **Phase 3** | **P2** | Deploy `postgresql-ha` with Pgpool (from `posgrsql-improve.yaml`) | SIT Cluster Common HelmRelease | DevOps / Platform | **⚠️ Pending (Infra)** |
